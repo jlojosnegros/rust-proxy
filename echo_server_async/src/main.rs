@@ -6,15 +6,26 @@ async fn main() -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:8081").await?;
     println!("Server listening on 127.0.0.1:8081");
 
-    // Accept a single connection
-    let (mut tcp_stream, sock_addr) = listener.accept().await?;
-    println!("Client connected from {}", sock_addr);
+    loop {
+        // Accept a single connection
+        let (tcp_stream, sock_addr) = listener.accept().await?;
+        println!("Client connected from {}", sock_addr);
 
+        // spawn a task for each connection
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(tcp_stream).await {
+                eprint!("Error handling {}: {}", sock_addr, e);
+            }
+        });
+    }
+}
+
+async fn handle_client(mut stream: tokio::net::TcpStream) -> std::io::Result<()> {
     let mut buffer = [0u8; 1024];
 
     loop {
         // Read asynchronously --> does NOT block the thread
-        let bytes_read = tcp_stream.read(&mut buffer).await?;
+        let bytes_read = stream.read(&mut buffer).await?;
 
         if bytes_read == 0 {
             println!("Client disconnected");
@@ -24,7 +35,7 @@ async fn main() -> std::io::Result<()> {
         println!("Received {} bytes", bytes_read);
 
         // write async
-        tcp_stream.write_all(&buffer[..bytes_read]).await?;
+        stream.write_all(&buffer[..bytes_read]).await?;
     }
     Ok(())
 }
