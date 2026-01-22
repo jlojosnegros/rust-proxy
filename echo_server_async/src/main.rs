@@ -1,5 +1,8 @@
+use std::time::Duration;
+
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::time::timeout;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -22,10 +25,19 @@ async fn main() -> std::io::Result<()> {
 
 async fn handle_client(mut stream: tokio::net::TcpStream) -> std::io::Result<()> {
     let mut buffer = [0u8; 1024];
+    let idle_timeout = Duration::from_secs(30);
 
     loop {
         // Read asynchronously --> does NOT block the thread
-        let bytes_read = stream.read(&mut buffer).await?;
+        // use a timeout
+        let ret = timeout(idle_timeout, stream.read(&mut buffer)).await;
+        let bytes_read = match ret {
+            Ok(result) => result?,
+            Err(_) => {
+                println!("timeout");
+                break;
+            }
+        };
 
         if bytes_read == 0 {
             println!("Client disconnected");
