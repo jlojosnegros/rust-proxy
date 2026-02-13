@@ -99,41 +99,47 @@ async fn main() -> std::io::Result<()> {
     loop {
         // Accept a single connection
         tokio::select! {
+            // Note: tokio::select pools branches in no specific order by default.
+            // If one branch returns "Ready" all the other branches are cancelled.
+            // This may imply some data loss if the branch was, for example, reading from network
+            // some operations are safe and some others are not you need to check case by case.
+            // "biased" instruct tokio select to pool branches in the order they are defined.
+            // this helps if you have some branches that have more priority than others, but
+            // may cause starvation if one of them is defined before and is returning Ready often
+            biased;
 
-        // Branch 1: Accept new connection
-        result = listener.accept() => {
-            match result {
-                Ok((tcp_stream, sock_addr)) => {
-
-                    let (active, total) = shared_state.connection_started();
-                    println!(
-                        "Client connected from {} (active: {}, total: {})",
-                        sock_addr, active, total
-                    );
-
-                    // Clone the state to share it with the async tasks
-                    let cloned_state = shared_state.clone();
-                    let clone_config = config.clone();
-
-                    // spawn a task for each connection
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_client(tcp_stream, cloned_state.clone(), clone_config).await {
-                            eprint!("Error handling {}: {}", sock_addr, e);
-                        }
-                        let remaining = cloned_state.connection_ended();
-                        println!("Client disconnected (active: {})", remaining);
-                    });
-
-                }
-                Err(e) => eprintln!("Accept error: {}", e),
-            }
-
-        }
-
-        // Branch 2: Shutdown signal Received
-        _ = wait_for_shutdown() => {
+            // Branch 1: Shutdown signal Received
+            _ = wait_for_shutdown() => {
                 println!("Shutdown signal received");
                 break;
+            }
+            // Branch 2: Accept new connection
+            result = listener.accept() => {
+                match result {
+                    Ok((tcp_stream, sock_addr)) => {
+
+                        let (active, total) = shared_state.connection_started();
+                        println!(
+                            "Client connected from {} (active: {}, total: {})",
+                            sock_addr, active, total
+                        );
+
+                        // Clone the state to share it with the async tasks
+                        let cloned_state = shared_state.clone();
+                        let clone_config = config.clone();
+
+                        // spawn a task for each connection
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_client(tcp_stream, cloned_state.clone(), clone_config).await {
+                                eprint!("Error handling {}: {}", sock_addr, e);
+                            }
+                            let remaining = cloned_state.connection_ended();
+                            println!("Client disconnected (active: {})", remaining);
+                        });
+
+                    }
+                    Err(e) => eprintln!("Accept error: {}", e),
+                }
             }
         }
     }
@@ -177,8 +183,18 @@ async fn handle_client(
     loop {
         line.clear();
         tokio::select! {
+            // jlom: Here biased is not really needed because we are saving the bytes readded in
+            // a BufReader outside of the loop so *the state is saved between loop iterations and 
+            // so there is no data loss*
+            biased;
 
-            // Branch one: Normal read operation
+            // Branch one: Shutdown requested via CancellationToken
+            _ = state.shutdown.cancelled() => {
+                    println!(" handler received shutdown signal");
+                    let _ = writer.write_all(b"Server shutting down ... \n").await;
+                    break;
+            }
+            // Branch two: Normal read operation
             ret = timeout(idle_timeout, reader.read_line(&mut line)) => {
                 // Read asynchronously --> does NOT block the thread
                 // use a timeout
@@ -224,13 +240,6 @@ async fn handle_client(
                         writer.write_all(line.as_bytes()).await?;
                     }
                 }
-            }
-
-            // Branch two: Shutdown requested via CancellationToken
-            _ = state.shutdown.cancelled() => {
-                    println!(" handler received shutdown signal");
-                    let _ = writer.write_all(b"Server shutting down ... \n").await;
-                    break;
             }
         }
     }
