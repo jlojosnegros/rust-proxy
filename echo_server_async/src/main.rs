@@ -12,6 +12,7 @@ use tokio::{
     sync::RwLock,
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
 struct Config {
@@ -30,12 +31,14 @@ impl Default for Config {
 struct ServerState {
     active_connections: AtomicUsize,
     total_connections: AtomicUsize,
+    shutdown: CancellationToken,
 }
 impl ServerState {
     fn new() -> Self {
         Self {
             active_connections: AtomicUsize::new(0),
             total_connections: AtomicUsize::new(0),
+            shutdown: CancellationToken::new(),
         }
     }
 
@@ -135,12 +138,34 @@ async fn main() -> std::io::Result<()> {
         }
     }
     println!("Server Shutdown");
+
+    // NOTE:  as we have exited the loop we are not accepting any more connections
+    //
+    // Signal all handlers to stop
+    shared_state.shutdown.cancel();
+
+    let drain_timeout = Duration::from_secs(5);
+    let drain_result = timeout(drain_timeout, async {
+        while shared_state.active_connections.load(Ordering::Relaxed) > 0 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+
+    match drain_result {
+        Ok(_) => println!("All connections drained successfully"),
+        Err(_) => {
+            let remaining = shared_state.active_connections.load(Ordering::Relaxed);
+            println!(" Drain timeout, {} connections remaining", remaining);
+        }
+    }
+
     Ok(())
 }
 
 async fn handle_client(
     stream: tokio::net::TcpStream,
-    _state: Arc<ServerState>,
+    state: Arc<ServerState>,
     config: Arc<RwLock<Config>>,
 ) -> std::io::Result<()> {
     let (reader, mut writer) = stream.into_split();
@@ -151,54 +176,63 @@ async fn handle_client(
 
     loop {
         line.clear();
-        // Read asynchronously --> does NOT block the thread
-        // use a timeout
-        let ret = timeout(idle_timeout, reader.read_line(&mut line)).await;
-        let bytes_read = match ret {
-            Ok(result) => result?,
-            Err(_) => {
-                println!("timeout");
-                break;
-            }
-        };
+        tokio::select! {
 
-        if bytes_read == 0 {
-            break;
+            // Branch one: Normal read operation
+            ret = timeout(idle_timeout, reader.read_line(&mut line)) => {
+                // Read asynchronously --> does NOT block the thread
+                // use a timeout
+                let bytes_read = match ret {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        println!("timeout");
+                        break;
+                    }
+                };
+
+                if bytes_read == 0 {
+                    break;
+                }
+
+                println!("Received {} bytes", bytes_read);
+                let trimmed = line.trim();
+
+                if trimmed == "CONFIG" {
+                    let cfg = config.read().await;
+
+                    let response = format!("Config: {:?}\n", cfg);
+                    writer.write_all(response.as_bytes()).await?;
+                } else if trimmed.starts_with(SET_MAX) {
+                    if let Ok(new_size) = trimmed[SET_MAX.len()..].parse::<usize>() {
+                        let mut cfg = config.write().await;
+                        cfg.max_message_size = new_size;
+
+                        let response = format!("Updated max_message_size to {}\n", new_size);
+                        writer.write_all(response.as_bytes()).await?;
+                    } else {
+                        writer.write_all(b"Invalid number\n").await?;
+                    }
+                } else {
+                    // Just need to echo the message
+                    // But first lets check against the max_message_size
+                    let max_size = config.read().await.max_message_size;
+                    if line.len() > max_size {
+                        writer
+                            .write_all(format!("Message too long (max: {})", max_size).as_bytes())
+                            .await?;
+                    } else {
+                        writer.write_all(line.as_bytes()).await?;
+                    }
+                }
+            }
+
+            // Branch two: Shutdown requested via CancellationToken
+            _ = state.shutdown.cancelled() => {
+                    println!(" handler received shutdown signal");
+                    let _ = writer.write_all(b"Server shutting down ... \n").await;
+                    break;
+            }
         }
-
-        println!("Received {} bytes", bytes_read);
-        let trimmed = line.trim();
-
-        if trimmed == "CONFIG" {
-            let cfg = config.read().await;
-
-            let response = format!("Config: {:?}\n", cfg);
-            writer.write_all(response.as_bytes()).await?;
-        } else if trimmed.starts_with(SET_MAX) {
-            if let Ok(new_size) = trimmed[SET_MAX.len()..].parse::<usize>() {
-                let mut cfg = config.write().await;
-                cfg.max_message_size = new_size;
-
-                let response = format!("Updated max_message_size to {}\n", new_size);
-                writer.write_all(response.as_bytes()).await?;
-            } else {
-                writer.write_all(b"Invalid number\n").await?;
-            }
-        } else {
-            // Just need to echo the message
-            // But first lets check against the max_message_size
-            let max_size = config.read().await.max_message_size;
-            if line.len() > max_size {
-                writer
-                    .write_all(format!("Message too long (max: {})", max_size).as_bytes())
-                    .await?;
-            } else {
-                writer.write_all(line.as_bytes()).await?;
-            }
-        }
-
-        // write async
-        // stream.write_all(&buffer[..bytes_read]).await?;
     }
     Ok(())
 }
