@@ -20,7 +20,6 @@ mod load10k {
 
         let mut handles = vec![];
 
-
         let _echo_server = setup_echo_server().await?;
 
         for idx in 0..target_connections {
