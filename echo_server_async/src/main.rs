@@ -8,6 +8,7 @@ use std::{
 
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    signal,
     sync::RwLock,
     time::timeout,
 };
@@ -47,6 +48,39 @@ impl ServerState {
         self.active_connections.fetch_sub(1, Ordering::Relaxed) - 1
     }
 }
+
+async fn wait_for_shutdown() {
+    // lets create a future that completes only when ctrl+c is pressed
+    let ctrl_c = async {
+        signal::ctrl_c().await.expect("failed to listen for ctrl+c");
+    };
+
+    // ------------------------------
+    // Handle for TERMINATE (SIGTERM)
+    // ------------------------------
+
+    // In Unix/Linux create a future that completes when receive SIGTERM
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::SignalKind;
+
+        signal::unix::signal(SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    // for not unix systems just create a never ending future for now
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    // now wait for any of these futures to complete
+    tokio::select! {
+        _ = ctrl_c => println!("Received Ctrl+C"),
+        _ = terminate => println!("Received SIGTERM"),
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     // Create shared state
@@ -61,26 +95,47 @@ async fn main() -> std::io::Result<()> {
 
     loop {
         // Accept a single connection
-        let (tcp_stream, sock_addr) = listener.accept().await?;
-        let (active, total) = shared_state.connection_started();
-        println!(
-            "Client connected from {} (active: {}, total: {})",
-            sock_addr, active, total
-        );
+        tokio::select! {
 
-        // Clone the state to share it with the async tasks
-        let cloned_state = shared_state.clone();
-        let clone_config = config.clone();
+        // Branch 1: Accept new connection
+        result = listener.accept() => {
+            match result {
+                Ok((tcp_stream, sock_addr)) => {
 
-        // spawn a task for each connection
-        tokio::spawn(async move {
-            if let Err(e) = handle_client(tcp_stream, cloned_state.clone(), clone_config).await {
-                eprint!("Error handling {}: {}", sock_addr, e);
+                    let (active, total) = shared_state.connection_started();
+                    println!(
+                        "Client connected from {} (active: {}, total: {})",
+                        sock_addr, active, total
+                    );
+
+                    // Clone the state to share it with the async tasks
+                    let cloned_state = shared_state.clone();
+                    let clone_config = config.clone();
+
+                    // spawn a task for each connection
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_client(tcp_stream, cloned_state.clone(), clone_config).await {
+                            eprint!("Error handling {}: {}", sock_addr, e);
+                        }
+                        let remaining = cloned_state.connection_ended();
+                        println!("Client disconnected (active: {})", remaining);
+                    });
+
+                }
+                Err(e) => eprintln!("Accept error: {}", e),
             }
-            let remaining = cloned_state.connection_ended();
-            println!("Client disconnected (active: {})", remaining);
-        });
+
+        }
+
+        // Branch 2: Shutdown signal Received
+        _ = wait_for_shutdown() => {
+                println!("Shutdown signal received");
+                break;
+            }
+        }
     }
+    println!("Server Shutdown");
+    Ok(())
 }
 
 async fn handle_client(
