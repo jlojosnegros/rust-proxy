@@ -4,10 +4,10 @@ mod metrics;
 mod server;
 
 use metrics::Metrics;
-use std::sync::Arc;
-use tokio::{signal, sync::RwLock};
+use std::{sync::Arc, time::Duration};
+use tokio::{signal, sync::RwLock, time::{sleep, timeout}};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::config::Config;
 
@@ -28,7 +28,26 @@ impl ServerState {
 }
 
 async fn drain_connections(metrics: &Metrics, drain_timeout: u64) {
-    todo!()
+    info!("Starting connection drain ...");
+
+    let drain_result = timeout(Duration::from_secs(drain_timeout), async {
+        loop {
+            let active = metrics.active_connections();
+            if active == 0 {
+                break;
+            }
+            info!("Waitinf for {} active connections to drain ...", active);
+            sleep(Duration::from_millis(500)).await;
+        }
+    }).await;
+
+    match drain_result {
+        Ok(_) => info!("All connections drained successfully"),
+        Err(_) => {
+            let remaining = metrics.active_connections();
+            warn!("Drain timeout, {} connections remaining", remaining);
+        }
+    }
 }
 async fn shutdown_signal() {
     let ctrl_c = async {
