@@ -3,7 +3,10 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::error;
 
-use crate::ServerState;
+use crate::{
+    ServerState,
+    handler::{handle_echo_connection, handle_health_connection},
+};
 
 pub async fn run_echo_server(state: Arc<ServerState>, addr: &str) -> std::io::Result<()> {
     let listener = TcpListener::bind(addr).await?;
@@ -48,11 +51,10 @@ pub async fn run_health_server(state: Arc<ServerState>, addr: &str) -> std::io::
 
             result = listener.accept() => {
                 match result {
-                    Ok((tcp_stream, remote_addr)) => {
+                    Ok((tcp_stream, _remote_addr)) => {
                         let state = state.clone();
-                        let remote_addr_str = remote_addr.to_string();
                         tokio::spawn(async move {
-                            handle_health_connection(tcp_stream, state, remote_addr_str).await;
+                            handle_health_connection(tcp_stream, state).await;
                         });
                     }
                     Err(e) => {

@@ -5,7 +5,6 @@ use tokio::{
     net::TcpStream,
 };
 use tracing::{debug, info, warn};
-use tracing_subscriber::fmt::writer;
 
 use crate::ServerState;
 
@@ -112,7 +111,6 @@ pub async fn handle_health_connection(tcp_stream: TcpStream, state: Arc<ServerSt
         debug!("Health check error: {}", e);
     }
 }
-
 async fn health_request(mut tcp_stream: TcpStream, state: Arc<ServerState>) -> std::io::Result<()> {
     let mut buffer = [0u8; 1024];
     let n = tcp_stream.read(&mut buffer).await?;
@@ -152,7 +150,6 @@ async fn health_request(mut tcp_stream: TcpStream, state: Arc<ServerState>) -> s
             )
         }
     };
-
 
     tcp_stream.write_all(response.as_bytes()).await?;
 
