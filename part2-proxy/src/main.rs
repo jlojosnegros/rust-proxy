@@ -1,6 +1,5 @@
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncReadExt, AsyncWriteExt}, join, net::{TcpListener, TcpStream}
 };
 
 #[tokio::main]
@@ -20,25 +19,51 @@ async fn main() -> std::io::Result<()> {
     }
 }
 
-async fn handle_connection(mut client: TcpStream) -> std::io::Result<()> {
+async fn handle_connection(client: TcpStream) -> std::io::Result<()> {
     // Target : connect to upstream ( server ) at 127.0.0.1:9090
     // and forward downstream (client ) data to it.
 
-    let mut upstream = TcpStream::connect("127.0.0.1:9090").await?;
+   let upstream = TcpStream::connect("127.0.0.1:9090").await?;
     println!("connected to upstream");
 
-    let mut buffer = [0u8; 1024];
+    let (mut client_read, mut client_write)  = client.into_split();
+    let (mut upstream_read, mut upstream_write ) = upstream.into_split();
 
-    loop {
-        let bytes_read = client.read(&mut buffer).await?;
-        if bytes_read == 0 {
-            println!("Client disconnected");
-            break;
+    let client2upstream = tokio::spawn(async move {
+        let mut buffer = [0u8; 1024];
+        loop {
+            let ret = client_read.read(&mut buffer).await;
+            let bytes_read = match  ret {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+
+            if upstream_write.write_all(&buffer[..bytes_read]).await.is_err() {
+                break;
+            }
         }
+    });
 
-        println!("Forwarding {} bytes to upstream", bytes_read);
-        upstream.write_all(&buffer[..bytes_read]).await?;
-    }
+    let upstream2client = tokio::spawn(async move {
+        let mut buffer = [0u8; 1024];
+        loop {
+            let ret = upstream_read.read(&mut buffer).await;
+            let bytes_read = match  ret {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(_) => break,
+            };
+
+            if client_write.write_all(&buffer[..bytes_read]).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let _ = join!(client2upstream, upstream2client);
+
+    println!("Connection closed");
 
     Ok(())
 }
