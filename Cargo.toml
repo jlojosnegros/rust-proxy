@@ -3,4 +3,4 @@
 resolver="2"
 members = ["echo_server_async",
   "echo_server_sync"
-, "milestone01_prod-ready-echo-server"]
+, "milestone01_prod-ready-echo-server", "part2-proxy"]

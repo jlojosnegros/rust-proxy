@@ -173,6 +173,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "part2-proxy"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
