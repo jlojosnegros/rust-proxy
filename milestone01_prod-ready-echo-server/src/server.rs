@@ -1,4 +1,3 @@
-mod handler;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
@@ -19,7 +18,7 @@ pub async fn run_echo_server(state: Arc<ServerState>, addr: &str) -> std::io::Re
 
             result = listener.accept() => {
                 match result {
-                    OK((tcp_stream, remote_addr)) => {
+                    Ok((tcp_stream, remote_addr)) => {
                         let state = state.clone();
                         let remote_addr_str = remote_addr.to_string();
                         tokio::spawn(async move {
@@ -49,7 +48,7 @@ pub async fn run_health_server(state: Arc<ServerState>, addr: &str) -> std::io::
 
             result = listener.accept() => {
                 match result {
-                    OK((tcp_stream, remote_addr)) => {
+                    Ok((tcp_stream, remote_addr)) => {
                         let state = state.clone();
                         let remote_addr_str = remote_addr.to_string();
                         tokio::spawn(async move {
