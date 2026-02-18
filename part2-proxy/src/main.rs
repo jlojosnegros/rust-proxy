@@ -1,4 +1,5 @@
 mod config;
+mod pool;
 mod proxy;
 use std::{sync::Arc, time::Duration};
 
@@ -10,7 +11,10 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::config::{Config, load_config};
+use crate::{
+    config::{Config, load_config},
+    pool::ConnectionPool,
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -22,7 +26,8 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let config = Arc::new(RwLock::new(load_config()));
-    debug!("Configuration: {:?} ", config.read().await);
+    let pool = Arc::new(ConnectionPool::new(&config.read().await.upstream.to_string(), 10));
+    debug!("Connection Pool created");
 
     let listener = TcpListener::bind(config.read().await.listen.to_string()).await?;
     debug!(
@@ -35,8 +40,9 @@ async fn main() -> std::io::Result<()> {
         debug!("Client connected: {}", remote_addr);
 
         let config_cloned = config.clone();
+        let pool_cloned = pool.clone();
         tokio::spawn(async move {
-            match handle_connection(client, config_cloned).await {
+            match handle_connection(client, config_cloned, pool_cloned).await {
                 Ok((up, down)) => {
                     println!("[{}] Complete: {} up, {}  down", remote_addr, up, down);
                 }
@@ -48,16 +54,19 @@ async fn main() -> std::io::Result<()> {
     }
 }
 
-#[instrument(skip(client, config), fields(client_addr = %client.peer_addr().unwrap()))]
+#[instrument(skip(client, config, pool), fields(client_addr = %client.peer_addr().unwrap()))]
 async fn handle_connection(
     mut client: TcpStream,
     config: Arc<RwLock<Config>>,
+    pool: Arc<ConnectionPool>,
 ) -> std::io::Result<(u64, u64)> {
     // connect to upstream ( server ) at 127.0.0.1:9090
     debug!("Connecting to upstream");
+    // Get connection from the pool
+    //
     let upstream_result = timeout(
         CONNECT_TIMEOUT,
-        TcpStream::connect(config.read().await.upstream.to_string()),
+        pool.reserve()
     )
     .await;
 
@@ -91,6 +100,10 @@ async fn handle_connection(
     match result {
         Ok(Ok((up, down))) => {
             info!(bytes_up = up, bytes_down = down, "Transfer complete");
+
+            // return connection to the pool (only if there is no error)
+            pool.release(upstream).await;
+
             Ok((up, down))
         }
         Ok(Err(e)) => {
