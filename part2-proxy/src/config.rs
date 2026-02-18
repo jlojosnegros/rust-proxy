@@ -1,4 +1,4 @@
-use std::fs;
+use std::{fmt::Display, fs};
 
 use serde::Deserialize;
 use tracing::{error, info, warn};
@@ -15,9 +15,9 @@ pub(crate) struct Address {
     pub(crate) port: u16,
 }
 
-impl Address {
-    pub(crate) fn to_string(&self) -> String {
-        format!("{}:{}", self.address, self.port)
+impl Display for Address {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.address, self.port)
     }
 }
 
