@@ -1,8 +1,10 @@
 mod config;
+mod deadpool;
 mod pool;
 mod proxy;
 use std::{sync::Arc, time::Duration};
 
+use ::deadpool::managed::Pool;
 use tokio::{
     io::{AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -13,11 +15,13 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
     config::{Config, load_config},
-    pool::ConnectionPool,
+    deadpool::TcpConnectionManager,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+type ConnectionPool = Pool<TcpConnectionManager>;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -26,7 +30,12 @@ async fn main() -> std::io::Result<()> {
         .init();
 
     let config = Arc::new(RwLock::new(load_config()));
-    let pool = Arc::new(ConnectionPool::new(&config.read().await.upstream.to_string(), 10));
+    let manager = TcpConnectionManager::new(config.read().await.upstream.to_string());
+    let pool = Pool::builder(manager)
+        .max_size(10)
+        .build()
+        .expect("Failed to create the pool");
+    debug!(max_size=pool.status().max_size, size=pool.status().size, used=pool.status().size-pool.status().available, available=pool.status().available, "Pool status");
     debug!("Connection Pool created");
 
     let listener = TcpListener::bind(config.read().await.listen.to_string()).await?;
@@ -58,18 +67,15 @@ async fn main() -> std::io::Result<()> {
 async fn handle_connection(
     mut client: TcpStream,
     config: Arc<RwLock<Config>>,
-    pool: Arc<ConnectionPool>,
+    pool: ConnectionPool,
 ) -> std::io::Result<(u64, u64)> {
     // connect to upstream ( server ) at 127.0.0.1:9090
     debug!("Connecting to upstream");
     // Get connection from the pool
     //
-    let upstream_result = timeout(
-        CONNECT_TIMEOUT,
-        pool.reserve()
-    )
-    .await;
+    let upstream_result = timeout(CONNECT_TIMEOUT, pool.get()).await;
 
+    debug!(used=pool.status().size-pool.status().available, available=pool.status().available, "Pool status");
     let mut upstream = match upstream_result {
         Ok(Ok(tcp_stream)) => {
             info!("Upstream connected");
@@ -80,7 +86,7 @@ async fn handle_connection(
             eprintln!("{}", msg);
             let _ = client.write_all(msg.as_bytes()).await;
             error!(msg);
-            return Err(e);
+            return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, e));
         }
         Err(_) => {
             eprintln!("Upstream connection timeout");
@@ -95,14 +101,15 @@ async fn handle_connection(
     println!("connected to upstream");
 
     // proxy data bidirectionally
-    let result = timeout(IDLE_TIMEOUT, copy_bidirectional(&mut client, &mut upstream)).await;
+    let result = timeout(IDLE_TIMEOUT, copy_bidirectional(&mut client, &mut *upstream)).await;
 
     match result {
         Ok(Ok((up, down))) => {
             info!(bytes_up = up, bytes_down = down, "Transfer complete");
 
+            // NOTE: deadpool returns the connection when dropped
             // return connection to the pool (only if there is no error)
-            pool.release(upstream).await;
+            // pool.release(upstream).await;
 
             Ok((up, down))
         }
