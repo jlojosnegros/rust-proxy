@@ -1,10 +1,10 @@
 mod config;
-mod deadpool;
+mod pooldead;
 mod pool;
 mod proxy;
 use std::{sync::Arc, time::Duration};
 
-use ::deadpool::managed::Pool;
+use deadpool::managed::Pool;
 use tokio::{
     io::{AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -15,7 +15,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
     config::{Config, load_config},
-    deadpool::TcpConnectionManager,
+    pooldead::TcpConnectionManager,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
