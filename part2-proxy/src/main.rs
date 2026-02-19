@@ -63,10 +63,10 @@ async fn main() -> std::io::Result<()> {
     }
 }
 
-#[instrument(skip(client, config, pool), fields(client_addr = %client.peer_addr().unwrap()))]
+#[instrument(skip(client, _config, pool), fields(client_addr = %client.peer_addr().unwrap()))]
 async fn handle_connection(
     mut client: TcpStream,
-    config: Arc<RwLock<Config>>,
+    _config: Arc<RwLock<Config>>,
     pool: ConnectionPool,
 ) -> std::io::Result<(u64, u64)> {
     // connect to upstream ( server ) at 127.0.0.1:9090
