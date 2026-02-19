@@ -5,6 +5,7 @@ mod proxy;
 use std::{sync::Arc, time::Duration};
 
 use deadpool::managed::Pool;
+
 use tokio::{
     io::{AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream},
@@ -31,8 +32,21 @@ async fn main() -> std::io::Result<()> {
 
     let config = Arc::new(RwLock::new(load_config()));
     let manager = TcpConnectionManager::new(config.read().await.upstream.to_string());
+
+    // calculate max_size as 2 * number CPU cores
+    let max_size = std::thread::available_parallelism()
+        .map(|n| n.get() * 2)
+        .unwrap_or(10);
+
+
     let pool = Pool::builder(manager)
-        .max_size(10)
+        .max_size(max_size)
+        .runtime(deadpool::Runtime::Tokio1)
+        .timeouts(deadpool::managed::Timeouts {
+            wait: Some(Duration::from_secs(5)),    //wait for available conn
+            create: Some(Duration::from_secs(3)),  //timeout creating new conn
+            recycle: Some(Duration::from_secs(1)), // timeout checking conn health
+        })
         .build()
         .expect("Failed to create the pool");
     debug!(max_size=pool.status().max_size, size=pool.status().size, used=pool.status().size-pool.status().available, available=pool.status().available, "Pool status");
