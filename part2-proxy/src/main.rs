@@ -1,6 +1,6 @@
 mod config;
-mod pooldead;
 mod pool;
+mod pooldead;
 mod proxy;
 use std::{sync::Arc, time::Duration};
 
@@ -38,7 +38,6 @@ async fn main() -> std::io::Result<()> {
         .map(|n| n.get() * 2)
         .unwrap_or(10);
 
-
     let pool = Pool::builder(manager)
         .max_size(max_size)
         .runtime(deadpool::Runtime::Tokio1)
@@ -49,7 +48,13 @@ async fn main() -> std::io::Result<()> {
         })
         .build()
         .expect("Failed to create the pool");
-    debug!(max_size=pool.status().max_size, size=pool.status().size, used=pool.status().size-pool.status().available, available=pool.status().available, "Pool status");
+    debug!(
+        max_size = pool.status().max_size,
+        size = pool.status().size,
+        used = pool.status().size - pool.status().available,
+        available = pool.status().available,
+        "Pool status"
+    );
     debug!("Connection Pool created");
 
     let listener = TcpListener::bind(config.read().await.listen.to_string()).await?;
@@ -89,7 +94,11 @@ async fn handle_connection(
     //
     let upstream_result = timeout(CONNECT_TIMEOUT, pool.get()).await;
 
-    debug!(used=pool.status().size-pool.status().available, available=pool.status().available, "Pool status");
+    debug!(
+        used = pool.status().size - pool.status().available,
+        available = pool.status().available,
+        "Pool status"
+    );
     let mut upstream = match upstream_result {
         Ok(Ok(tcp_stream)) => {
             info!("Upstream connected");
@@ -115,7 +124,11 @@ async fn handle_connection(
     println!("connected to upstream");
 
     // proxy data bidirectionally
-    let result = timeout(IDLE_TIMEOUT, copy_bidirectional(&mut client, &mut *upstream)).await;
+    let result = timeout(
+        IDLE_TIMEOUT,
+        copy_bidirectional(&mut client, &mut *upstream),
+    )
+    .await;
 
     match result {
         Ok(Ok((up, down))) => {
